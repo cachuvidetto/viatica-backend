@@ -32,24 +32,8 @@ const app = express();
 // Trust proxy if behind reverse proxy
 app.set('trust proxy', 1);
 
-// CORS
-// CORS (Security Update)
-// Get allowed origins from .env, split by comma
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
-  : [];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: true, // Allows any origin dynamically, required for credentials: true
   credentials: true
 }));
 
