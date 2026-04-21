@@ -22,7 +22,18 @@ const createSendToken = (user, statusCode, res) => {
 };
 
 exports.register = catchAsync(async (req, res, next) => {
-  const user = await User.create(req.body);
+  // 🔐 Security: Strip sensitive fields from public registration
+  // Only admin can create warehouse/admin/driver accounts (via admin panel)
+  const safeBody = { ...req.body };
+  
+  // If the caller is NOT an admin, force safe defaults
+  if (!req.user || req.user.role !== 'admin') {
+    safeBody.role = 'pharmacist'; // Force pharmacist role for public registration
+    delete safeBody.isVerified;
+    delete safeBody.status;
+  }
+
+  const user = await User.create(safeBody);
   createSendToken(user, 201, res);
 });
 
@@ -111,12 +122,23 @@ exports.verifyOTP = catchAsync(async (req, res, next) => {
 });
 
 exports.login = catchAsync(async (req, res, next) => {
-  const { email, password } = req.body;
-  if (!email || !password) return next(new AppError('الرجاء إدخال البريد الإلكتروني وكلمة المرور', 400));
-  const user = await User.findOne({ email }).select('+password');
+  // We accept either email or phone in the "email" field from frontend
+  const identifier = req.body.email || req.body.phone;
+  const password = req.body.password;
+  
+  if (!identifier || !password) return next(new AppError('الرجاء إدخال البريد الإلكتروني أو رقم الهاتف وكلمة المرور', 400));
+  
+  const user = await User.findOne({ 
+    $or: [
+      { email: identifier.toLowerCase() },
+      { phone: identifier }
+    ]
+  }).select('+password');
+  
   if (!user || !(await user.correctPassword(password, user.password))) {
     return next(new AppError('بيانات الاعتماد غير صحيحة', 401));
   }
+  
   createSendToken(user, 200, res);
 });
 
@@ -145,6 +167,26 @@ exports.restrictTo = (...roles) => {
     }
     next();
   };
+};
+
+// 🔐 Optional auth — sets req.user if token exists, but doesn't block if no token
+exports.optionalProtect = async (req, res, next) => {
+  try {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    } else if (req.cookies && req.cookies.jwt) {
+      token = req.cookies.jwt;
+    }
+    if (token) {
+      const decoded = await promisify(jwt.verify)(token, process.env.JWT_SECRET);
+      const currentUser = await User.findById(decoded.id);
+      if (currentUser) req.user = currentUser;
+    }
+  } catch (err) {
+    // Silently ignore — user stays unauthenticated
+  }
+  next();
 };
 
 exports.getMe = (req, res) => {
@@ -199,3 +241,12 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
   await user.save();
   createSendToken(user, 200, res);
 });
+
+exports.updateFcmToken = catchAsync(async (req, res, next) => {
+  const { fcmToken } = req.body;
+  if (!fcmToken) return next(new AppError('الرجاء توفير رمز FCM', 400));
+  
+  await User.findByIdAndUpdate(req.user.id, { fcmToken }, { new: true, runValidators: true });
+  res.status(200).json({ status: 'success', message: 'تم تحديث رمز التنبيهات بنجاح' });
+});
+

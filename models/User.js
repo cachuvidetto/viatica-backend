@@ -28,7 +28,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'pharmacist', 'warehouse', 'driver'],
+    enum: ['admin', 'pharmacist', 'warehouse', 'driver', 'customer'],
     default: 'pharmacist'
   },
   warehouse: {
@@ -53,6 +53,10 @@ const userSchema = new mongoose.Schema({
     minlength: 8,
     select: false
   },
+  fcmToken: {
+    type: String, // Firebase Cloud Messaging Token for Push Notifications
+    select: false // Avoid sending it to frontend automatically
+  },
   otp: {
     type: String,
     select: false
@@ -64,6 +68,30 @@ const userSchema = new mongoose.Schema({
   location: {
     type: { type: String, enum: ['Point'], default: 'Point' },
     coordinates: { type: [Number], default: [0,0] } // [lng, lat]
+  },
+  
+  // --- حقول خاصة بالمستودعات فقط ---
+  logo: {
+    type: String, // رابط صورة الشعار
+    default: 'default-warehouse.png'
+  },
+  commercialRegister: {
+    type: String, // رقم أو رابط صورة السجل التجاري
+  },
+  managerName: {
+    type: String, // اسم المدير المسؤول
+  },
+  warehouseType: {
+    type: String,
+    enum: ['موزع معتمد', 'مستودع عام', 'شركة مصنعة'],
+    default: 'مستودع عام'
+  },
+  addressText: {
+    type: String, // تفاصيل العنوان (شارع، مبنى)
+  },
+  invoiceFooterText: {
+    type: String,
+    default: 'نشكر لكم ثقتكم بنا. تم إصدار هذه الفاتورة عبر نظام Viatica.'
   }
 }, { timestamps: true });
 

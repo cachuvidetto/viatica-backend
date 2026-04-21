@@ -5,7 +5,7 @@ const adminController = require('../controllers/admin.controller');
 
 router.get('/dashboard', 
   auth.protect,
-  auth.restrictTo('admin'),
+  auth.restrictTo('admin', 'warehouse'),
   adminController.getDashboardStats
 );
 

@@ -22,6 +22,9 @@ const ledgerRoutes = require('./routes/ledger.routes');
 const adminRoutes = require('./routes/admin.routes');
 const notificationRoutes = require('./routes/notification.routes');
 const importRoutes = require('./routes/import.routes');
+const reportRoutes = require('./routes/report.routes');
+const returnRoutes = require('./routes/return.routes');
+const feedRoutes = require('./routes/feed.routes');
 const auditLogger = require('./middlewares/auditLogger');
 
 const app = express();
@@ -30,9 +33,23 @@ const app = express();
 app.set('trust proxy', 1);
 
 // CORS
-// CORS - Allow all for development
+// CORS (Security Update)
+// Get allowed origins from .env, split by comma
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+  : [];
+
 app.use(cors({
-  origin: true, // Allow all origins (for mobile app + dashboard)
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true
 }));
 
@@ -74,6 +91,17 @@ const setupRoutes = require('./routes/setup.routes');
 
 // Routes
 console.log('📍 Registering routes...');
+
+// Health check (for Render / monitoring)
+app.get('/api/v1/health', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: '🟢 Viatica API is running',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.use('/api/v1/setup', setupRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/users', userRoutes);
@@ -85,7 +113,10 @@ app.use('/api/v1/ledger', ledgerRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/import', importRoutes);
+app.use('/api/v1/reports', reportRoutes);
+app.use('/api/v1/returns', returnRoutes);
 app.use('/api/v1/invoices', invoiceRoutes);
+app.use('/api/v1/feed', feedRoutes);
 console.log('✅ Routes registered successfully');
 
 // 404 handler

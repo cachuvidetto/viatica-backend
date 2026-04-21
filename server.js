@@ -6,6 +6,7 @@ process.on('uncaughtException', err => {
 require('dotenv').config();
 const app = require('./app');
 const connectDB = require('./config/db');
+require('./config/firebase'); // Initialize Firebase Admin SDK
 
 const port = process.env.PORT || 5000;
 

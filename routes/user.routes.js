@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
+const Drug = require('../models/Drug');
+const Order = require('../models/Order');
 const auth = require('../middlewares/auth');
 const upload = require('../middlewares/upload');
 const AppError = require('../utils/appError');
@@ -16,13 +18,20 @@ const notifyAdmin = async (title, message) => {
 };
 
 // Update current user profile
-router.patch('/updateMe', auth.protect, upload.single('licenseImage'), catchAsync(async (req, res, next) => {
+router.patch('/updateMe', auth.protect, upload.fields([{ name: 'licenseImage', maxCount: 1 }, { name: 'logo', maxCount: 1 }]), catchAsync(async (req, res, next) => {
   // 1) Filter allowed fields
-  const { name, pharmacyName, lat, lng } = req.body;
+  const { name, pharmacyName, lat, lng, invoiceFooter } = req.body;
   const updateData = {};
   if (name) updateData.name = name;
   if (pharmacyName) updateData.pharmacyName = pharmacyName;
-  if (req.file) updateData.licenseImage = req.file.path; // Cloudinary URL
+  if (invoiceFooter !== undefined) updateData.invoiceFooter = invoiceFooter;
+
+  if (req.files && req.files.licenseImage) {
+    updateData.licenseImage = req.files.licenseImage[0].path; // Cloudinary URL
+  }
+  if (req.files && req.files.logo) {
+    updateData.logo = req.files.logo[0].path; // Cloudinary URL
+  }
 
   if (lat && lng) {
     updateData.location = {
@@ -48,7 +57,20 @@ router.patch('/updateMe', auth.protect, upload.single('licenseImage'), catchAsyn
   }
 }));
 
-router.get('/', auth.protect, auth.restrictTo('admin'), catchAsync(async (req, res) => {
+// Get all verified warehouses for mobile app users
+router.get('/public/warehouses', auth.protect, catchAsync(async (req, res, next) => {
+  const warehouses = await User.find({ role: 'warehouse', status: 'verified' })
+    .select('name pharmacyName logo phone addressText email')
+    .sort('-createdAt');
+    
+  res.status(200).json({
+    status: 'success',
+    results: warehouses.length,
+    data: { warehouses }
+  });
+}));
+
+router.get('/', auth.protect, auth.restrictTo('admin', 'warehouse'), catchAsync(async (req, res) => {
   const { role } = req.query;
   const page  = Math.max(1, +req.query.page || 1);
   const limit = Math.min(100, +req.query.limit || 20);
@@ -56,6 +78,10 @@ router.get('/', auth.protect, auth.restrictTo('admin'), catchAsync(async (req, r
 
   const filter = {};
   if (role) filter.role = role;
+  // Warehouse can only see pharmacists and customers
+  if (req.user.role === 'warehouse') {
+    filter.role = { $in: ['pharmacist', 'customer'] };
+  }
 
   const [users, total] = await Promise.all([
     User.find(filter).select('-password').sort('-createdAt').skip(skip).limit(limit).lean(),
@@ -64,9 +90,85 @@ router.get('/', auth.protect, auth.restrictTo('admin'), catchAsync(async (req, r
   res.status(200).json({ status: 'success', page, limit, total, results: users.length, data: { users } });
 }));
 
+// Quick-create a customer or pharmacist from warehouse POS
+router.post('/', auth.protect, auth.restrictTo('admin', 'warehouse'), catchAsync(async (req, res, next) => {
+  const { name, phone, pharmacyName, role } = req.body;
+  if (!name || !phone) return next(new AppError('الاسم ورقم الهاتف مطلوبان', 400));
+
+  let finalRole = role || 'pharmacist';
+  if (req.user.role === 'warehouse' && !['pharmacist', 'customer'].includes(finalRole)) {
+    finalRole = 'pharmacist'; // fallback safety
+  }
+  
+  const user = await User.create({
+    name, phone,
+    pharmacyName: pharmacyName || name,
+    role: finalRole,
+    password: 'Viatica2024!',
+    isVerified: true,
+    status: 'verified'
+  });
+
+  res.status(201).json({
+    status: 'success',
+    data: { user: { _id: user._id, name: user.name, phone: user.phone, pharmacyName: user.pharmacyName, role: user.role } }
+  });
+}));
+
+router.get('/warehouse/:id', auth.protect, auth.restrictTo('admin', 'warehouse'), catchAsync(async (req, res, next) => {
+  // Security: If user is warehouse, they can only view their own profile
+  if (req.user.role === 'warehouse' && String(req.user._id) !== req.params.id) {
+    return next(new AppError('لا تملك صلاحية للوصول لبيانات هذا المستودع', 403));
+  }
+
+  const user = await User.findOne({ _id: req.params.id, role: 'warehouse' }).select('-password');
+  if (!user) return next(new AppError('لم يتم العثور على المستودع', 404));
+
+  const [totalDrugs, totalOrders, pendingOrders] = await Promise.all([
+    Drug.countDocuments({ warehouse: user._id }),
+    Order.countDocuments({ warehouse: user._id }),
+    Order.countDocuments({ warehouse: user._id, status: 'pending' })
+  ]);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      user,
+      stats: { totalDrugs, totalOrders, pendingOrders }
+    }
+  });
+}));
+
 router.get('/:id', auth.protect, auth.restrictTo('admin'), catchAsync(async (req, res, next) => {
   const user = await User.findById(req.params.id).select('-password');
   if (!user) return next(new AppError('لا يوجد مستخدم', 404));
+  res.status(200).json({ status: 'success', data: { user } });
+}));
+
+router.patch('/:id', auth.protect, auth.restrictTo('admin', 'warehouse'), catchAsync(async (req, res, next) => {
+  // Security: A warehouse can only update their own profile
+  if (req.user.role === 'warehouse' && String(req.user._id) !== req.params.id) {
+    return next(new AppError('لا تملك صلاحية لتحديث بيانات هذا المستخدم', 403));
+  }
+
+  const allowedFields = ['name', 'phone', 'email', 'managerName', 'commercialRegister', 'warehouseType', 'addressText', 'invoiceFooterText'];
+  
+  const updateData = {};
+  allowedFields.forEach(field => {
+    if (req.body[field] !== undefined) updateData[field] = req.body[field];
+  });
+
+  if (Object.keys(updateData).length === 0) {
+    return next(new AppError('لا توجد حقول صالحة للتحديث', 400));
+  }
+
+  const user = await User.findByIdAndUpdate(req.params.id, updateData, {
+    new: true,
+    runValidators: true
+  }).select('-password');
+
+  if (!user) return next(new AppError('لا يوجد مستخدم', 404));
+
   res.status(200).json({ status: 'success', data: { user } });
 }));
 

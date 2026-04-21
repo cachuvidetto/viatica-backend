@@ -20,8 +20,8 @@ const drugSchema = new mongoose.Schema({
     type: String,
     required: [true, 'A drug must belong to a category'],
     enum: {
-      values: ['antibiotic', 'analgesic', 'antihistamine', 'antidepressant', 'other'],
-      message: 'Category is either: antibiotic, analgesic, antihistamine, antidepressant, other'
+      values: ['antibiotic', 'analgesic', 'antihistamine', 'antidepressant', 'cosmetics', 'other'],
+      message: 'Category is either: antibiotic, analgesic, antihistamine, antidepressant, cosmetics, other'
     }
   },
   quantity: {
@@ -37,6 +37,15 @@ const drugSchema = new mongoose.Schema({
   priceUSD: {
     type: Number,
     min: [0, 'Price in USD must be above 0']
+  },
+  publicPrice: {
+    type: Number,
+    min: [0, 'Public price must be above 0']
+  },
+  barcode: {
+    type: String,
+    trim: true,
+    index: true
   },
   expiryDate: {
     type: Date,

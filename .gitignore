@@ -7,6 +7,9 @@ dist/
 .env.production
 .env.local
 
+# Firebase secrets
+config/serviceAccountKey.json
+
 # Debug logs
 npm-debug.log*
 yarn-debug.log*
