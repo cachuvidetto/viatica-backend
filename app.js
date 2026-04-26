@@ -26,6 +26,8 @@ const reportRoutes = require('./routes/report.routes');
 const returnRoutes = require('./routes/return.routes');
 const feedRoutes = require('./routes/feed.routes');
 const expenseRoutes = require('./routes/expense.routes');
+const supplierRoutes = require('./routes/supplier.routes');
+const purchaseRoutes = require('./routes/purchase.routes');
 const auditLogger = require('./middlewares/auditLogger');
 
 const app = express();
@@ -103,6 +105,8 @@ app.use('/api/v1/returns', returnRoutes);
 app.use('/api/v1/invoices', invoiceRoutes);
 app.use('/api/v1/feed', feedRoutes);
 app.use('/api/v1/expenses', expenseRoutes);
+app.use('/api/v1/suppliers', supplierRoutes);
+app.use('/api/v1/purchases', purchaseRoutes);
 console.log('✅ Routes registered successfully');
 
 // 404 handler
