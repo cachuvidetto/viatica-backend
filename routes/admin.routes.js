@@ -43,4 +43,10 @@ router.get('/profit-loss',
   adminController.getProfitAndLoss
 );
 
+router.post('/seed-demo',
+  auth.protect,
+  auth.restrictTo('admin', 'warehouse'),
+  adminController.seedDemoData
+);
+
 module.exports = router;

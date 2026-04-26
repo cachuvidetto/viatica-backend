@@ -300,3 +300,16 @@ exports.getProfitAndLoss = catchAsync(async (req, res, next) => {
     }
   });
 });
+
+exports.seedDemoData = catchAsync(async (req, res, next) => {
+  const seedData = require('../scripts/seedDemo');
+  try {
+    await seedData();
+    res.status(200).json({
+      status: 'success',
+      message: 'Demo seed data has been successfully injected into the database.'
+    });
+  } catch (error) {
+    return next(new AppError('Failed to inject demo data: ' + error.message, 500));
+  }
+});
