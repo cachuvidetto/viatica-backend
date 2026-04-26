@@ -6,70 +6,68 @@ const mongoose = require('mongoose');
 
 // Create purchase + auto-update stock & costPrice
 exports.createPurchase = catchAsync(async (req, res, next) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const { supplier, invoiceNumber, items, discount, paymentStatus, paidAmount, notes, date } = req.body;
+  const warehouseId = req.user._id;
 
-  try {
-    const { supplier, invoiceNumber, items, discount, paymentStatus, paidAmount, notes, date } = req.body;
-    const warehouseId = req.user._id;
-
-    if (!items || items.length === 0) {
-      return next(new AppError('يجب إضافة صنف واحد على الأقل', 400));
-    }
-
-    // Calculate totals
-    const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.costPrice), 0);
-    const total = subtotal - (discount || 0);
-
-    // Create the purchase record
-    const purchase = await Purchase.create([{
-      warehouse: warehouseId,
-      supplier,
-      invoiceNumber: invoiceNumber || '',
-      items: items.map(i => ({
-        drug: i.drug,
-        drugName: i.drugName,
-        quantity: i.quantity,
-        costPrice: i.costPrice,
-        total: i.quantity * i.costPrice
-      })),
-      subtotal,
-      discount: discount || 0,
-      total,
-      paymentStatus: paymentStatus || 'paid',
-      paidAmount: paymentStatus === 'paid' ? total : (paidAmount || 0),
-      notes: notes || '',
-      date: date || new Date()
-    }], { session });
-
-    // Update stock quantities and costPrice for each drug
-    for (const item of items) {
-      await Drug.findOneAndUpdate(
-        { _id: item.drug, warehouse: warehouseId },
-        {
-          $inc: { quantity: item.quantity },
-          $set: { costPrice: item.costPrice }
-        },
-        { session }
-      );
-    }
-
-    await session.commitTransaction();
-    session.endSession();
-
-    // Populate supplier name for the response
-    const populated = await Purchase.findById(purchase[0]._id).populate('supplier', 'name company');
-
-    res.status(201).json({
-      status: 'success',
-      message: `تم تسجيل فاتورة شراء بقيمة ${total.toLocaleString()} ل.س وتحديث المخزون تلقائياً`,
-      data: { purchase: populated }
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    throw err;
+  if (!items || items.length === 0) {
+    return next(new AppError('يجب إضافة صنف واحد على الأقل', 400));
   }
+
+  // Calculate totals
+  const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.costPrice), 0);
+  const total = subtotal - (discount || 0);
+
+  // Create the purchase record
+  const purchase = await Purchase.create({
+    warehouse: warehouseId,
+    supplier,
+    invoiceNumber: invoiceNumber || '',
+    items: items.map(i => ({
+      drug: i.drug,
+      drugName: i.drugName,
+      quantity: i.quantity,
+      unitType: i.unitType || 'unit',
+      costPrice: i.costPrice,
+      total: i.quantity * i.costPrice
+    })),
+    subtotal,
+    discount: discount || 0,
+    total,
+    paymentStatus: paymentStatus || 'paid',
+    paidAmount: paymentStatus === 'paid' ? total : (paidAmount || 0),
+    notes: notes || '',
+    date: date || new Date()
+  });
+
+  // Update stock quantities and costPrice for each drug
+  for (const item of items) {
+    let qtyToAdd = item.quantity;
+
+    // If purchased by carton, convert to individual units
+    if (item.unitType === 'carton') {
+      const drug = await Drug.findById(item.drug).select('packingSize');
+      if (drug && drug.packingSize > 1) {
+        qtyToAdd = item.quantity * drug.packingSize;
+      }
+    }
+
+    await Drug.findOneAndUpdate(
+      { _id: item.drug, warehouse: warehouseId },
+      {
+        $inc: { quantity: qtyToAdd },
+        $set: { costPrice: item.costPrice }
+      }
+    );
+  }
+
+  // Populate supplier name for the response
+  const populated = await Purchase.findById(purchase._id).populate('supplier', 'name company');
+
+  res.status(201).json({
+    status: 'success',
+    message: `تم تسجيل فاتورة شراء بقيمة ${total.toLocaleString()} ل.س وتحديث المخزون تلقائياً`,
+    data: { purchase: populated }
+  });
 });
 
 // Get all purchases (with optional filters)

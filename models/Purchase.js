@@ -4,6 +4,7 @@ const purchaseItemSchema = new mongoose.Schema({
   drug: { type: mongoose.Schema.Types.ObjectId, ref: 'Drug', required: true },
   drugName: { type: String, required: true },
   quantity: { type: Number, required: true, min: 1 },
+  unitType: { type: String, enum: ['unit', 'carton'], default: 'unit' },
   costPrice: { type: Number, required: true, min: 0 },
   total: { type: Number, required: true }
 }, { _id: false });

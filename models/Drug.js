@@ -52,6 +52,11 @@ const drugSchema = new mongoose.Schema({
     default: 10,
     min: [0, 'Minimum threshold must be 0 or above']
   },
+  packingSize: {
+    type: Number,
+    default: 1,
+    min: [1, 'Packing size must be at least 1']
+  },
   barcode: {
     type: String,
     trim: true,
