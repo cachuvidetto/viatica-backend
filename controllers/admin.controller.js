@@ -14,12 +14,16 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
   const orderFilter = isWarehouse ? { warehouse: warehouseId } : {};
   const drugFilter  = isWarehouse ? { warehouse: warehouseId } : {};
 
-  // ─── Basic Counts ───
-  const [totalOrders, totalDrugs, lowStock, pendingOrders] = await Promise.all([
+  // ─── Expiry & Stock Alert Counts ───
+  const now = new Date();
+  const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  const [totalOrders, totalDrugs, lowStock, pendingOrders, expiryAlerts] = await Promise.all([
     Order.countDocuments(orderFilter),
     Drug.countDocuments(drugFilter),
-    Drug.countDocuments({ ...drugFilter, quantity: { $lt: 10 } }),
-    Order.countDocuments({ ...orderFilter, status: 'pending' })
+    Drug.countDocuments({ ...drugFilter, $expr: { $lte: ['$quantity', '$minThreshold'] } }),
+    Order.countDocuments({ ...orderFilter, status: 'pending' }),
+    Drug.countDocuments({ ...drugFilter, expiryDate: { $lte: in30Days }, quantity: { $gt: 0 } })
   ]);
 
   // ─── Recent Orders ───
@@ -138,6 +142,7 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       totalDrugs,
       lowStock,
       pendingOrders,
+      expiryAlerts,
       totalSalesMonth,
       totalSalesToday,
       invoicesToday,
@@ -146,6 +151,81 @@ exports.getDashboardStats = catchAsync(async (req, res, next) => {
       topDrugs,
       recentOrders,
       role: req.user.role
+    }
+  });
+});
+
+// ─── Expiry Alerts ───
+exports.getExpiryAlerts = catchAsync(async (req, res, next) => {
+  const isWarehouse = req.user.role === 'warehouse';
+  const drugFilter = isWarehouse ? { warehouse: req.user._id } : {};
+
+  const now = new Date();
+  const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const in60Days = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+  const drugs = await Drug.find({
+    ...drugFilter,
+    expiryDate: { $lte: in90Days },
+    quantity: { $gt: 0 }
+  }).select('name manufacturer quantity expiryDate batchNumber price costPrice').sort('expiryDate').lean();
+
+  // Categorize
+  const expired = [];
+  const within30 = [];
+  const within60 = [];
+  const within90 = [];
+
+  drugs.forEach(d => {
+    const exp = new Date(d.expiryDate);
+    if (exp <= now) expired.push(d);
+    else if (exp <= in30Days) within30.push(d);
+    else if (exp <= in60Days) within60.push(d);
+    else within90.push(d);
+  });
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      summary: {
+        expired: expired.length,
+        within30: within30.length,
+        within60: within60.length,
+        within90: within90.length,
+        total: drugs.length
+      },
+      expired,
+      within30,
+      within60,
+      within90
+    }
+  });
+});
+
+// ─── Stock Alerts ───
+exports.getStockAlerts = catchAsync(async (req, res, next) => {
+  const isWarehouse = req.user.role === 'warehouse';
+  const drugFilter = isWarehouse ? { warehouse: req.user._id } : {};
+
+  const drugs = await Drug.find({
+    ...drugFilter,
+    $expr: { $lte: ['$quantity', '$minThreshold'] }
+  }).select('name manufacturer quantity minThreshold price costPrice batchNumber').sort('quantity').lean();
+
+  const outOfStock = drugs.filter(d => d.quantity === 0);
+  const lowStock = drugs.filter(d => d.quantity > 0);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      summary: {
+        outOfStock: outOfStock.length,
+        lowStock: lowStock.length,
+        total: drugs.length
+      },
+      outOfStock,
+      lowStock
     }
   });
 });

@@ -25,4 +25,16 @@ router.get('/dashboard',
   adminController.getDashboardStats
 );
 
+router.get('/alerts/expiry',
+  auth.protect,
+  auth.restrictTo('admin', 'warehouse'),
+  adminController.getExpiryAlerts
+);
+
+router.get('/alerts/stock',
+  auth.protect,
+  auth.restrictTo('admin', 'warehouse'),
+  adminController.getStockAlerts
+);
+
 module.exports = router;

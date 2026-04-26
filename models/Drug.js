@@ -34,6 +34,11 @@ const drugSchema = new mongoose.Schema({
     required: [true, 'A drug must have a price'],
     min: [0, 'Price must be above 0']
   },
+  costPrice: {
+    type: Number,
+    min: [0, 'Cost price must be above 0'],
+    default: 0
+  },
   priceUSD: {
     type: Number,
     min: [0, 'Price in USD must be above 0']
@@ -41,6 +46,11 @@ const drugSchema = new mongoose.Schema({
   publicPrice: {
     type: Number,
     min: [0, 'Public price must be above 0']
+  },
+  minThreshold: {
+    type: Number,
+    default: 10,
+    min: [0, 'Minimum threshold must be 0 or above']
   },
   barcode: {
     type: String,
