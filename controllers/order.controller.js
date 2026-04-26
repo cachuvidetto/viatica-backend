@@ -106,15 +106,16 @@ exports.createOrder = catchAsync(async (req, res, next) => {
       drug: item.drug,
       quantity: item.quantity,
       price: unitPrice,
+      costPrice: drugDoc.costPrice || 0,
       appliedOffer: offer ? offer._id : undefined
     });
 
-    // Add bonus item if applicable
     if (bonusItems > 0) {
       finalDrugsList.push({
         drug: item.drug,
         quantity: bonusItems,
         price: 0,
+        costPrice: drugDoc.costPrice || 0,
         isBonus: true,
         appliedOffer: offer ? offer._id : undefined
       });
@@ -299,7 +300,8 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
     finalDrugsList.push({
       drug: item.drug,
       quantity: item.quantity,
-      price: unitPrice
+      price: unitPrice,
+      costPrice: drugDoc.costPrice || 0
     });
     totalAmount += unitPrice * item.quantity;
   }

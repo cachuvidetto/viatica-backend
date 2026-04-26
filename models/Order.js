@@ -4,6 +4,7 @@ const orderDrugSchema = new mongoose.Schema({
   drug: { type: mongoose.Schema.Types.ObjectId, ref: 'Drug', required: true },
   quantity: { type: Number, required: true, min: 1 },
   price: { type: Number, required: true, min: 0 },
+  costPrice: { type: Number, default: 0 }, // Cost at the time of sale for Profit calculation
   isBonus: { type: Boolean, default: false },
   appliedOffer: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer' }
 }, { _id: false });

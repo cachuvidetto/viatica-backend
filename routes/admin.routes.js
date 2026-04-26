@@ -37,4 +37,10 @@ router.get('/alerts/stock',
   adminController.getStockAlerts
 );
 
+router.get('/profit-loss',
+  auth.protect,
+  auth.restrictTo('admin', 'warehouse'),
+  adminController.getProfitAndLoss
+);
+
 module.exports = router;

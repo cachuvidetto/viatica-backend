@@ -5,6 +5,7 @@ const Order = require('../models/Order');
 const Drug = require('../models/Drug');
 const Invoice = require('../models/Invoice');
 const Ledger = require('../models/Ledger');
+const Expense = require('../models/Expense');
 const mongoose = require('mongoose');
 
 exports.getDashboardStats = catchAsync(async (req, res, next) => {
@@ -226,6 +227,76 @@ exports.getStockAlerts = catchAsync(async (req, res, next) => {
       },
       outOfStock,
       lowStock
+    }
+  });
+});
+
+// ─── Profit & Loss (P&L) ───
+exports.getProfitAndLoss = catchAsync(async (req, res, next) => {
+  const warehouseId = req.user._id;
+  const { startDate, endDate } = req.query;
+
+  const matchFilter = {
+    warehouse: new mongoose.Types.ObjectId(warehouseId),
+    status: { $in: ['confirmed', 'assigned', 'out_for_delivery', 'delivered'] } // Valid sales
+  };
+
+  if (startDate || endDate) {
+    matchFilter.createdAt = {};
+    if (startDate) matchFilter.createdAt.$gte = new Date(startDate);
+    if (endDate) matchFilter.createdAt.$lte = new Date(endDate + 'T23:59:59');
+  }
+
+  // 1. Calculate Revenue & COGS from Orders
+  const salesAgg = await Order.aggregate([
+    { $match: matchFilter },
+    { $unwind: '$drugs' },
+    { $group: {
+        _id: null,
+        totalRevenue: { $sum: { $multiply: ['$drugs.price', '$drugs.quantity'] } },
+        totalCOGS: { $sum: { $multiply: [{ $ifNull: ['$drugs.costPrice', 0] }, '$drugs.quantity'] } }
+      }
+    }
+  ]);
+
+  const totalRevenue = salesAgg[0]?.totalRevenue || 0;
+  const totalCOGS = salesAgg[0]?.totalCOGS || 0;
+  const grossProfit = totalRevenue - totalCOGS;
+
+  // 2. Calculate Operating Expenses
+  const expenseFilter = { warehouse: warehouseId };
+  if (startDate || endDate) {
+    expenseFilter.date = {};
+    if (startDate) expenseFilter.date.$gte = new Date(startDate);
+    if (endDate) expenseFilter.date.$lte = new Date(endDate + 'T23:59:59');
+  }
+
+  const expensesAgg = await Expense.aggregate([
+    { $match: { ...expenseFilter, warehouse: new mongoose.Types.ObjectId(warehouseId) } },
+    { $group: { _id: null, totalExpenses: { $sum: '$amount' } } }
+  ]);
+  
+  const totalExpenses = expensesAgg[0]?.totalExpenses || 0;
+
+  // 3. Net Profit
+  const netProfit = grossProfit - totalExpenses;
+
+  // 4. Expenses Breakdown by Category
+  const expensesBreakdown = await Expense.aggregate([
+    { $match: { ...expenseFilter, warehouse: new mongoose.Types.ObjectId(warehouseId) } },
+    { $group: { _id: '$category', total: { $sum: '$amount' } } },
+    { $sort: { total: -1 } }
+  ]);
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      totalRevenue,
+      totalCOGS,
+      grossProfit,
+      totalExpenses,
+      netProfit,
+      expensesBreakdown
     }
   });
 });
