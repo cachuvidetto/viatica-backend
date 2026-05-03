@@ -36,17 +36,18 @@ const app = express();
 // Trust proxy if behind reverse proxy
 app.set('trust proxy', 1);
 
-const allowedOrigins = String(process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://viatica-dashboard.vercel.app',
+  ...(process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim())
+].filter(Boolean);
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow non-browser clients / same-origin requests (no Origin header)
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.length === 0) return cb(new AppError('CORS is not configured', 500));
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    // Allow non-browser clients or exact matches
+    if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+      return cb(null, true);
+    }
     return cb(new AppError('Not allowed by CORS', 403));
   },
   credentials: true
