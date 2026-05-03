@@ -42,24 +42,29 @@ exports.sendOTP = catchAsync(async (req, res, next) => {
   if (!phone) return next(new AppError('الرجاء إدخال رقم الهاتف', 400));
 
   // 1) Generate OTP
-  // Check if it's a test number (ends with 0000)
-  const isTestNumber = phone.endsWith('0000');
+  // Test number: ONLY this exact phone gets fixed OTP
+  const normalizedPhone = String(phone).trim();
+  const isTestNumber = normalizedPhone === '0999999999';
   const otp = isTestNumber ? '1234' : Math.floor(1000 + Math.random() * 9000).toString();
 
   // 2) Hash it
   const hashedOTP = crypto.createHash('sha256').update(otp).digest('hex');
 
-  // 3) Save to user
-  let user = await User.findOne({ phone });
+  // 3) Find or create user
+  let user = await User.findOne({ phone: normalizedPhone });
+  let isNewlyCreated = false;
   
   if (!user) {
+    // Truly new user — never seen this phone before
     user = await User.create({
-      phone,
+      phone: normalizedPhone,
       name: 'مستخدم جديد',
       otp: hashedOTP,
       otpExpires: Date.now() + 10 * 60 * 1000
     });
+    isNewlyCreated = true;
   } else {
+    // Existing user — just update OTP
     user.otp = hashedOTP;
     user.otpExpires = Date.now() + 10 * 60 * 1000;
     await user.save({ validateBeforeSave: false });
@@ -68,15 +73,19 @@ exports.sendOTP = catchAsync(async (req, res, next) => {
   // 4) Send via Bridge
   await SmsProvider.send(phone, `رمز التحقق الخاص بك في فارمجي هو: ${otp}`);
 
-  // Check if user is effectively new (not verified)
-  // If we just created it (user was null before), it's new. 
-  // If it existed but !isVerified, treat as new/incomplete.
-  const isNewUser = !user.isVerified;
+  // 5) Determine user state for mobile routing:
+  //    - isNewUser: truly new, never completed profile
+  //    - hasCompletedProfile: has pharmacyName set (filled the form)
+  //    - status: pending_review / verified / rejected
+  const hasCompletedProfile = !!(user.pharmacyName && user.pharmacyName !== 'مستخدم جديد');
+  const isNewUser = isNewlyCreated || (!hasCompletedProfile && !user.isVerified);
 
   res.status(200).json({
     status: 'success',
     message: 'تم إرسال رمز التحقق (راجع التيرمنال)',
-    isNewUser
+    isNewUser,
+    hasCompletedProfile,
+    userStatus: user.status || 'pending_review'
   });
 });
 

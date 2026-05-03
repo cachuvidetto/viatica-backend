@@ -5,6 +5,7 @@ const Order = require('../models/Order');
 const Drug = require('../models/Drug');
 const Ledger = require('../models/Ledger');
 const mongoose = require('mongoose');
+const StockMovement = require('../models/StockMovement');
 
 // Create a return for a delivered order
 exports.createReturn = catchAsync(async (req, res, next) => {
@@ -62,9 +63,28 @@ exports.createReturn = catchAsync(async (req, res, next) => {
 
   // 1. Restore stock to warehouse inventory
   for (const item of validatedItems) {
-    await Drug.findByIdAndUpdate(item.drug, {
+    const before = await Drug.findById(item.drug).select('quantity packingSize');
+    const updated = await Drug.findByIdAndUpdate(item.drug, {
       $inc: { quantity: item.quantity }
-    });
+    }, { new: true });
+
+    if (before && updated) {
+      await StockMovement.create({
+        warehouse: req.user._id,
+        drug: item.drug,
+        type: 'return_in',
+        direction: 'in',
+        quantity: item.quantity,
+        unitType: 'unit',
+        packingSize: before.packingSize || 1,
+        quantityUnits: item.quantity,
+        beforeQty: before.quantity,
+        afterQty: updated.quantity,
+        referenceModel: 'Return',
+        referenceId: returnRecord._id,
+        actor: req.user._id
+      });
+    }
   }
 
   // 2. Record financial credit entry (نقصان الديون) if pharmacist is registered

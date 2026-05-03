@@ -28,6 +28,7 @@ const feedRoutes = require('./routes/feed.routes');
 const expenseRoutes = require('./routes/expense.routes');
 const supplierRoutes = require('./routes/supplier.routes');
 const purchaseRoutes = require('./routes/purchase.routes');
+const stockRoutes = require('./routes/stock.routes');
 const auditLogger = require('./middlewares/auditLogger');
 
 const app = express();
@@ -35,8 +36,19 @@ const app = express();
 // Trust proxy if behind reverse proxy
 app.set('trust proxy', 1);
 
+const allowedOrigins = String(process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: true, // Allows any origin dynamically, required for credentials: true
+  origin: (origin, cb) => {
+    // Allow non-browser clients / same-origin requests (no Origin header)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.length === 0) return cb(new AppError('CORS is not configured', 500));
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new AppError('Not allowed by CORS', 403));
+  },
   credentials: true
 }));
 
@@ -107,6 +119,7 @@ app.use('/api/v1/feed', feedRoutes);
 app.use('/api/v1/expenses', expenseRoutes);
 app.use('/api/v1/suppliers', supplierRoutes);
 app.use('/api/v1/purchases', purchaseRoutes);
+app.use('/api/v1/stock', stockRoutes);
 console.log('✅ Routes registered successfully');
 
 // 404 handler

@@ -19,13 +19,53 @@ class SmsProvider {
       console.log(`TO: ${phone}`);
       console.log(`MESSAGE: ${message}`);
       console.log('------------------------------------------');
+      
+      // OPTIONAL: Send to Telegram if configured
+      if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+        try {
+          const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+          const text = `🔐 *OTP جديد*\n\nالرقم: \`${phone}\`\nالكود: *${message}*`;
+          
+          await fetch(telegramUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: process.env.TELEGRAM_CHAT_ID,
+              text: text,
+              parse_mode: 'Markdown'
+            })
+          });
+          console.log(`✅ Sent to Telegram`);
+        } catch (error) {
+          console.error(`❌ Failed to send to Telegram:`, error.message);
+        }
+      }
+      
       return true;
     }
 
     // 2) Logic for Production (Placeholder)
     // Here you would integrate with your SMS provider API
-    // const response = await axios.post('your-sms-api-url', { phone, message, key: process.env.SMS_API_KEY });
-    // return response.status === 200;
+    // If Telegram is configured for Prod as a temporary measure:
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+      try {
+        const telegramUrl = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const text = `🔐 *OTP جديد*\n\nالرقم: \`${phone}\`\nالكود: *${message}*`;
+        
+        await fetch(telegramUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: process.env.TELEGRAM_CHAT_ID,
+            text: text,
+            parse_mode: 'Markdown'
+          })
+        });
+        return true;
+      } catch (error) {
+        console.error(`❌ Failed to send to Telegram:`, error.message);
+      }
+    }
     
     console.warn(`⚠️ SMS sending not fully configured for production. Logged to console instead.`);
     console.log(`[PROD MOCK] To ${phone}: ${message}`);

@@ -29,7 +29,10 @@ const orderSchema = new mongoose.Schema({
   deliveryAddress: String,
   deliveryFee: { type: Number, default: 0 },
   isFreeDelivery: { type: Boolean, default: false },
-  notes: String
+  notes: String,
+
+  // Prevent double-closing side effects (inventory + ledger sync)
+  deliveredClosureAppliedAt: { type: Date }
 }, { timestamps: true });
 
 orderSchema.index({ pharmacist: 1, createdAt: -1 });

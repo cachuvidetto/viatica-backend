@@ -1,0 +1,94 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = "mysql://root:@localhost:3306/pfs"
+}
+
+enum Role {
+  USER
+  ADMIN
+  OWNER
+}
+
+enum CustomerType {
+  INDIVIDUAL
+  COMPANY
+}
+
+model Customer {
+  id              Int      @id @default(autoincrement()) @map("customer_id")
+  email           String   @unique
+  firstName       String   @map("first_name")
+  lastName        String   @map("last_name")
+  phone           String?
+  customerType    CustomerType @map("customer_type")
+  companyName     String?  @map("company_name")
+  registrationDate DateTime @default(now()) @map("registration_date")
+  
+  users           User[]
+  licenses        License[]
+  invitations     Invitation[]
+
+  @@map("customers")
+}
+
+model User {
+  id              Int      @id @default(autoincrement()) @map("user_id")
+  customerId      Int      @map("customer_id")
+  email           String   @unique
+  passwordHash    String   @map("password_hash")
+  firstName       String   @map("first_name")
+  lastName        String   @map("last_name")
+  role            Role     @default(USER)
+  isVerified      Boolean  @default(false) @map("is_verified")
+  verificationCode String? @map("verification_code")
+  verificationExpires DateTime? @map("verification_code_expires")
+  verificationAttempts Int      @default(0) @map("verification_attempts")
+  lastVerificationSent DateTime? @map("last_verification_sent")
+  isActive        Boolean  @default(true) @map("is_active")
+  
+  customer        Customer @relation(fields: [customerId], references: [id])
+  invitations     Invitation[]
+
+  @@map("users")
+}
+
+model License {
+  id             Int      @id @default(autoincrement()) @map("license_id")
+  customerId     Int      @map("customer_id")
+  key            String   @unique @map("license_hash") // Legacy name
+  type           String   @map("license_type")         // Legacy name
+  seatNumber     Int      @default(1) @map("seat_number")
+  expiryDate     DateTime @map("expiration_date")      // Legacy name
+  issueDate      DateTime @default(now()) @map("issue_date")
+  username       String?  @map("username")
+  pcUuid         String?  @map("pc_uuid")
+  isFree         Int      @default(0) @map("is_free")  // Legacy uses Int (1/0)
+  lastActivity   DateTime @default(now()) @map("last_activity")
+  
+  // New fields for Smart Logic (Optional, can be null for legacy rows)
+  isActive       Boolean  @default(true) @map("is_active")
+
+  customer       Customer @relation(fields: [customerId], references: [id])
+
+  @@map("licenses")
+}
+
+model Invitation {
+  id             Int      @id @default(autoincrement())
+  email          String
+  token          String   @unique
+  inviterId      Int      @map("inviter_id")
+  customerId     Int      @map("customer_id")
+  status         String   @default("PENDING") // PENDING, ACCEPTED, EXPIRED
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  inviter        User     @relation(fields: [inviterId], references: [id])
+  customer       Customer @relation(fields: [customerId], references: [id])
+
+  @@map("invitations")
+}

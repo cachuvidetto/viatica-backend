@@ -37,5 +37,11 @@ const ledgerSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Prevent creating duplicate "debt" entries for the same order
+ledgerSchema.index(
+  { order: 1, type: 1 },
+  { unique: true, partialFilterExpression: { order: { $exists: true }, type: 'debt' } }
+);
+
 const Ledger = mongoose.model('Ledger', ledgerSchema);
 module.exports = Ledger;

@@ -8,6 +8,7 @@ const User = require('../models/User');
 const PharmacistStock = require('../models/PharmacistStock');
 const Ledger = require('../models/Ledger');
 const Invoice = require('../models/Invoice');
+const StockMovement = require('../models/StockMovement');
 
 const buildScope = (user) => {
   const filter = {};
@@ -56,6 +57,8 @@ exports.getOrderById = catchAsync(async (req, res, next) => {
 exports.createOrder = catchAsync(async (req, res, next) => {
   if (req.user.role !== 'pharmacist') return next(new AppError('الصيدلي فقط يمكنه إنشاء الطلب', 403));
   const { warehouse, drugs, deliveryAddress } = req.body;
+  if (!warehouse) return next(new AppError('يجب تحديد المستودع', 400));
+  if (!Array.isArray(drugs) || drugs.length === 0) return next(new AppError('يجب إضافة صنف واحد على الأقل', 400));
 
   // 1. Fetch Active Offers for this Warehouse
   const Offer = require('../models/Offer');
@@ -65,80 +68,112 @@ exports.createOrder = catchAsync(async (req, res, next) => {
     endDate: { $gte: new Date() }
   });
 
-  const finalDrugsList = [];
-  let totalOrderValue = 0;
+  const session = await mongoose.startSession();
+  let order;
+  try {
+    await session.withTransaction(async () => {
+      const finalDrugsList = [];
+      let totalOrderValue = 0;
+      const movements = [];
 
-  // 2. Process items and apply business logic
-  for (const item of drugs) {
-    const drugDoc = await Drug.findById(item.drug);
-    if (!drugDoc) throw new AppError('أحد الأدوية المطلوبة غير موجود', 400);
+      // 2) Process items and apply business logic
+      for (const item of drugs) {
+        const drugDoc = await Drug.findById(item.drug).session(session);
+        if (!drugDoc) throw new AppError('أحد الأدوية المطلوبة غير موجود', 400);
 
-    // Find matching offer for this drug
-    const offer = activeOffers.find(o => o.drug && String(o.drug) === String(item.drug));
-    
-    let unitPrice = drugDoc.price;
-    let bonusItems = 0;
+        // Find matching offer for this drug
+        const offer = activeOffers.find(o => o.drug && String(o.drug) === String(item.drug));
 
-    if (offer) {
-      // Apply % Discount
-      if (offer.type === 'discount' && offer.discountPercentage) {
-        unitPrice = unitPrice * (1 - offer.discountPercentage / 100);
+        let unitPrice = drugDoc.price;
+        let bonusItems = 0;
+
+        if (offer) {
+          // Apply % Discount
+          if (offer.type === 'discount' && offer.discountPercentage) {
+            unitPrice = unitPrice * (1 - offer.discountPercentage / 100);
+          }
+
+          // Calculate Bonus (10 + 2)
+          if (offer.type === 'bonus' && offer.bonusBase && offer.bonusQuantity) {
+            bonusItems = Math.floor(item.quantity / offer.bonusBase) * offer.bonusQuantity;
+          }
+        }
+
+        const totalQuantityToDeduct = item.quantity + bonusItems;
+
+        const before = await Drug.findOne({ _id: item.drug, warehouse }).select('quantity packingSize').session(session);
+
+        // Check & Deduct Stock
+        const updated = await Drug.findOneAndUpdate(
+          { _id: item.drug, warehouse, quantity: { $gte: totalQuantityToDeduct } },
+          { $inc: { quantity: -totalQuantityToDeduct } },
+          { new: true, session }
+        );
+        if (!updated) throw new AppError(`كمية غير كافية للدواء ${drugDoc.name}`, 400);
+
+        if (before) {
+          movements.push({
+            warehouse,
+            drug: item.drug,
+            type: 'order_out',
+            direction: 'out',
+            quantity: totalQuantityToDeduct,
+            unitType: 'unit',
+            packingSize: before.packingSize || 1,
+            quantityUnits: totalQuantityToDeduct,
+            beforeQty: before.quantity,
+            afterQty: updated.quantity,
+            referenceModel: 'Order',
+            actor: req.user._id,
+            notes: bonusItems > 0 ? `Includes bonus items: ${bonusItems}` : undefined
+          });
+        }
+
+        // Add main item
+        finalDrugsList.push({
+          drug: item.drug,
+          quantity: item.quantity,
+          price: unitPrice,
+          costPrice: drugDoc.costPrice || 0,
+          appliedOffer: offer ? offer._id : undefined
+        });
+
+        if (bonusItems > 0) {
+          finalDrugsList.push({
+            drug: item.drug,
+            quantity: bonusItems,
+            price: 0,
+            costPrice: drugDoc.costPrice || 0,
+            isBonus: true,
+            appliedOffer: offer ? offer._id : undefined
+          });
+        }
+
+        totalOrderValue += (unitPrice * item.quantity);
       }
-      
-      // Calculate Bonus (10 + 2)
-      if (offer.type === 'bonus' && offer.bonusBase && offer.bonusQuantity) {
-        bonusItems = Math.floor(item.quantity / offer.bonusBase) * offer.bonusQuantity;
+
+      // 3) Check for Free Delivery Offers
+      const deliveryOffer = activeOffers.find(o => o.freeDelivery && totalOrderValue >= o.minOrderValue);
+      const isFreeDelivery = Boolean(deliveryOffer);
+
+      const created = await Order.create([{
+        pharmacist: req.user._id,
+        warehouse,
+        drugs: finalDrugsList,
+        deliveryAddress,
+        isFreeDelivery,
+        deliveryFee: isFreeDelivery ? 0 : 5000 // Default delivery fee if not free
+      }], { session });
+      order = created[0];
+
+      if (movements.length) {
+        const docs = movements.map(m => ({ ...m, referenceId: order._id }));
+        await StockMovement.create(docs, { session });
       }
-    }
-
-    const totalQuantityToDeduct = item.quantity + bonusItems;
-
-    // Check & Deduct Stock
-    const updated = await Drug.findOneAndUpdate(
-      { _id: item.drug, warehouse, quantity: { $gte: totalQuantityToDeduct } },
-      { $inc: { quantity: -totalQuantityToDeduct } },
-      { new: true }
-    );
-    if (!updated) throw new AppError(`كمية غير كافية للدواء ${drugDoc.name}`, 400);
-
-    // Add main item
-    finalDrugsList.push({
-      drug: item.drug,
-      quantity: item.quantity,
-      price: unitPrice,
-      costPrice: drugDoc.costPrice || 0,
-      appliedOffer: offer ? offer._id : undefined
     });
-
-    if (bonusItems > 0) {
-      finalDrugsList.push({
-        drug: item.drug,
-        quantity: bonusItems,
-        price: 0,
-        costPrice: drugDoc.costPrice || 0,
-        isBonus: true,
-        appliedOffer: offer ? offer._id : undefined
-      });
-    }
-
-    totalOrderValue += (unitPrice * item.quantity);
+  } finally {
+    session.endSession();
   }
-
-  // 3. Check for Free Delivery Offers
-  let isFreeDelivery = false;
-  const deliveryOffer = activeOffers.find(o => o.freeDelivery && totalOrderValue >= o.minOrderValue);
-  if (deliveryOffer) {
-    isFreeDelivery = true;
-  }
-
-  const order = await Order.create({
-    pharmacist: req.user._id,
-    warehouse,
-    drugs: finalDrugsList,
-    deliveryAddress,
-    isFreeDelivery,
-    deliveryFee: isFreeDelivery ? 0 : 5000 // Default delivery fee if not free
-  });
 
   res.status(201).json({ 
     status: 'success', 
@@ -220,37 +255,53 @@ exports.updateOrderStatus = catchAsync(async (req, res, next) => {
 
   // Unified Order Closure Logic (Inventory + Ledger)
   if (status === 'delivered') {
+    // Idempotency: if closure already applied, do nothing
+    if (order.deliveredClosureAppliedAt) {
+      return res.status(200).json({ status: 'success', data: { order } });
+    }
+
+    const session = await mongoose.startSession();
     try {
-      // 1. Sync Inventory (PharmacistStock)
-      for (const item of order.drugs) {
-        await PharmacistStock.findOneAndUpdate(
-          { pharmacist: order.pharmacist, drug: item.drug },
-          { 
-            $inc: { quantity: item.quantity },
-            // Batch/Expiry info would ideally come from the warehouse delivery system
-            // For now we use placeholder or last known
-          },
-          { upsert: true, new: true }
-        );
-      }
+      await session.withTransaction(async () => {
+        const freshOrder = await Order.findById(order._id).session(session);
+        if (!freshOrder) throw new AppError('لا يوجد طلب بهذا المعرف', 404);
+        if (freshOrder.deliveredClosureAppliedAt) return; // already closed
 
-      // 2. Sync Ledger (Financial Debt)
-      // Calculate total order value (Price * Quantity for all items)
-      const totalAmount = order.drugs.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-      
-      await Ledger.create({
-        pharmacist: order.pharmacist,
-        warehouse: order.warehouse,
-        order: order._id,
-        type: 'debt',
-        amount: totalAmount,
-        description: `فاتورة طلب رقم #${order._id.toString().slice(-6)}`
+        // 1) Sync Inventory (PharmacistStock) — only for registered pharmacist orders
+        if (freshOrder.pharmacist) {
+          for (const item of freshOrder.drugs) {
+            await PharmacistStock.findOneAndUpdate(
+              { pharmacist: freshOrder.pharmacist, drug: item.drug },
+              { $inc: { quantity: item.quantity } },
+              { upsert: true, new: true, session }
+            );
+          }
+
+          // 2) Sync Ledger (Financial Debt) — one debt per order
+          const totalAmount = freshOrder.drugs.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+          await Ledger.create([{
+            pharmacist: freshOrder.pharmacist,
+            warehouse: freshOrder.warehouse,
+            order: freshOrder._id,
+            type: 'debt',
+            amount: totalAmount,
+            description: `فاتورة طلب رقم #${freshOrder._id.toString().slice(-6)}`
+          }], { session });
+        }
+
+        freshOrder.deliveredClosureAppliedAt = new Date();
+        await freshOrder.save({ session });
       });
-
-      console.log(`Order ${order._id} closed: Inventory & Ledger updated.`);
     } catch (syncError) {
-      console.error('Error in Order Closure Sync:', syncError);
-      // In a production app, we might want to log this to a separate error queue for retry
+      // Duplicate key means the debt was already created (idempotent)
+      if (syncError && syncError.code === 11000) {
+        await Order.findByIdAndUpdate(order._id, { deliveredClosureAppliedAt: new Date() });
+      } else {
+        console.error('Error in Order Closure Sync:', syncError);
+      }
+    } finally {
+      session.endSession();
     }
   }
 
@@ -283,16 +334,22 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
   const finalDrugsList = [];
   let totalAmount = 0;
 
-  // Process each drug — verify stock and deduct
+  const session = await mongoose.startSession();
+  let order;
+  let invoice = null;
+  try {
+    await session.withTransaction(async () => {
+      // Process each drug — verify stock and deduct
   for (const item of drugs) {
     const drugDoc = await Drug.findById(item.drug);
     if (!drugDoc) return next(new AppError(`الصنف غير موجود في قاعدة البيانات`, 400));
 
     // Verify stock
+    const before = await Drug.findOne({ _id: item.drug, warehouse: req.user._id }).select('quantity packingSize').session(session);
     const updated = await Drug.findOneAndUpdate(
       { _id: item.drug, warehouse: req.user._id, quantity: { $gte: item.quantity } },
       { $inc: { quantity: -item.quantity } },
-      { new: true }
+      { new: true, session }
     );
     if (!updated) return next(new AppError(`الكمية غير كافية للصنف: ${drugDoc.name}`, 400));
 
@@ -304,6 +361,24 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
       costPrice: drugDoc.costPrice || 0
     });
     totalAmount += unitPrice * item.quantity;
+
+    if (before) {
+      await StockMovement.create([{
+        warehouse: req.user._id,
+        drug: item.drug,
+        type: 'sale_out',
+        direction: 'out',
+        quantity: item.quantity,
+        unitType: 'unit',
+        packingSize: before.packingSize || 1,
+        quantityUnits: item.quantity,
+        beforeQty: before.quantity,
+        afterQty: updated.quantity,
+        referenceModel: 'ManualSale',
+        actor: req.user._id,
+        notes: source
+      }], { session });
+    }
   }
 
   // Create the order (auto-confirmed for manual sales)
@@ -322,31 +397,32 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
     orderData.pharmacist = pharmacistId;
   }
 
-  const order = await Order.create(orderData);
+  const created = await Order.create([orderData], { session });
+  order = created[0];
 
   // Financial: Record in Ledger for registered pharmacists/customers
   if (pharmacistId) {
     try {
       // Always record the debt (Invoice generation)
-      await Ledger.create({
+      await Ledger.create([{
         pharmacist: pharmacistId,
         warehouse: req.user._id,
         order: order._id,
         type: 'debt',
         amount: totalAmount,
         description: paymentType === 'cash' ? `فاتورة بيع نقدي #${order._id.toString().slice(-6)}` : `فاتورة بيع آجل #${order._id.toString().slice(-6)}`
-      });
+      }], { session });
 
       // If it's a cash sale, instantly record the settlement payment
       if (paymentType === 'cash') {
-        await Ledger.create({
+        await Ledger.create([{
           pharmacist: pharmacistId,
           warehouse: req.user._id,
           order: order._id,
           type: 'payment',
           amount: totalAmount,
           description: `تسديد نقدي فوري للفاتورة #${order._id.toString().slice(-6)}`
-        });
+        }], { session });
       }
     } catch (err) {
       console.error('Ledger entry error:', err);
@@ -354,14 +430,13 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
   }
 
   // Create Invoice Snapshot
-  let invoice = null;
   try {
-    const warehouse = await User.findById(req.user._id).select('name logo phone addressText managerName pharmacyName');
+    const warehouse = await User.findById(req.user._id).select('name logo phone addressText managerName pharmacyName').session(session);
     const invoiceItems = [];
     
     // We already have finalDrugsList but we need drug names
     for (const item of finalDrugsList) {
-      const d = await Drug.findById(item.drug).select('name manufacturer');
+      const d = await Drug.findById(item.drug).select('name manufacturer').session(session);
       invoiceItems.push({
         drugName: d?.name || 'صنف محذوف',
         manufacturer: d?.manufacturer || '',
@@ -371,7 +446,7 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
       });
     }
 
-    invoice = await Invoice.create({
+    const inv = await Invoice.create([{
       order: order._id,
       warehouse: req.user._id,
       warehouseSnapshot: {
@@ -391,9 +466,14 @@ exports.createManualSale = catchAsync(async (req, res, next) => {
       paymentType,
       notes,
       status: 'issued'
-    });
+    }], { session });
+    invoice = inv[0];
   } catch (err) {
     console.error('Invoice creation error:', err);
+  }
+    });
+  } finally {
+    session.endSession();
   }
 
   res.status(201).json({

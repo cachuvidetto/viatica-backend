@@ -3,6 +3,7 @@ const AppError = require('../utils/appError');
 const Purchase = require('../models/Purchase');
 const Drug = require('../models/Drug');
 const mongoose = require('mongoose');
+const StockMovement = require('../models/StockMovement');
 
 // Create purchase + auto-update stock & costPrice
 exports.createPurchase = catchAsync(async (req, res, next) => {
@@ -13,51 +14,82 @@ exports.createPurchase = catchAsync(async (req, res, next) => {
     return next(new AppError('يجب إضافة صنف واحد على الأقل', 400));
   }
 
-  // Calculate totals
-  const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.costPrice), 0);
-  const total = subtotal - (discount || 0);
+  const session = await mongoose.startSession();
+  let purchase;
+  try {
+    await session.withTransaction(async () => {
+      // Calculate totals
+      const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.costPrice), 0);
+      const total = subtotal - (discount || 0);
 
-  // Create the purchase record
-  const purchase = await Purchase.create({
-    warehouse: warehouseId,
-    supplier,
-    invoiceNumber: invoiceNumber || '',
-    items: items.map(i => ({
-      drug: i.drug,
-      drugName: i.drugName,
-      quantity: i.quantity,
-      unitType: i.unitType || 'unit',
-      costPrice: i.costPrice,
-      total: i.quantity * i.costPrice
-    })),
-    subtotal,
-    discount: discount || 0,
-    total,
-    paymentStatus: paymentStatus || 'paid',
-    paidAmount: paymentStatus === 'paid' ? total : (paidAmount || 0),
-    notes: notes || '',
-    date: date || new Date()
-  });
+      // Create the purchase record
+      const created = await Purchase.create([{
+        warehouse: warehouseId,
+        supplier,
+        invoiceNumber: invoiceNumber || '',
+        items: items.map(i => ({
+          drug: i.drug,
+          drugName: i.drugName,
+          quantity: i.quantity,
+          unitType: i.unitType || 'unit',
+          costPrice: i.costPrice,
+          total: i.quantity * i.costPrice
+        })),
+        subtotal,
+        discount: discount || 0,
+        total,
+        paymentStatus: paymentStatus || 'paid',
+        paidAmount: paymentStatus === 'paid' ? total : (paidAmount || 0),
+        notes: notes || '',
+        date: date || new Date()
+      }], { session });
+      purchase = created[0];
 
-  // Update stock quantities and costPrice for each drug
-  for (const item of items) {
-    let qtyToAdd = item.quantity;
+      // Update stock quantities and costPrice for each drug
+      for (const item of items) {
+        let qtyToAdd = item.quantity;
+        let packingSize = 1;
 
-    // If purchased by carton, convert to individual units
-    if (item.unitType === 'carton') {
-      const drug = await Drug.findById(item.drug).select('packingSize');
-      if (drug && drug.packingSize > 1) {
-        qtyToAdd = item.quantity * drug.packingSize;
+        // If purchased by carton, convert to individual units
+        if (item.unitType === 'carton') {
+          const drug = await Drug.findById(item.drug).select('packingSize').session(session);
+          if (drug && drug.packingSize > 1) {
+            packingSize = drug.packingSize;
+            qtyToAdd = item.quantity * packingSize;
+          }
+        }
+
+        const before = await Drug.findOne({ _id: item.drug, warehouse: warehouseId }).select('quantity').session(session);
+        const updated = await Drug.findOneAndUpdate(
+          { _id: item.drug, warehouse: warehouseId },
+          {
+            $inc: { quantity: qtyToAdd },
+            $set: { costPrice: item.costPrice }
+          },
+          { session, new: true }
+        );
+
+        if (before && updated) {
+          await StockMovement.create([{
+            warehouse: warehouseId,
+            drug: item.drug,
+            type: 'purchase_in',
+            direction: 'in',
+            quantity: item.quantity,
+            unitType: item.unitType === 'carton' ? 'carton' : 'unit',
+            packingSize,
+            quantityUnits: qtyToAdd,
+            beforeQty: before.quantity,
+            afterQty: updated.quantity,
+            referenceModel: 'Purchase',
+            referenceId: purchase._id,
+            actor: req.user._id
+          }], { session });
+        }
       }
-    }
-
-    await Drug.findOneAndUpdate(
-      { _id: item.drug, warehouse: warehouseId },
-      {
-        $inc: { quantity: qtyToAdd },
-        $set: { costPrice: item.costPrice }
-      }
-    );
+    });
+  } finally {
+    session.endSession();
   }
 
   // Populate supplier name for the response
@@ -65,7 +97,7 @@ exports.createPurchase = catchAsync(async (req, res, next) => {
 
   res.status(201).json({
     status: 'success',
-    message: `تم تسجيل فاتورة شراء بقيمة ${total.toLocaleString()} ل.س وتحديث المخزون تلقائياً`,
+    message: `تم تسجيل فاتورة شراء بقيمة ${populated.total.toLocaleString()} ل.س وتحديث المخزون تلقائياً`,
     data: { purchase: populated }
   });
 });
@@ -112,15 +144,55 @@ exports.deletePurchase = catchAsync(async (req, res, next) => {
   const purchase = await Purchase.findOne({ _id: req.params.id, warehouse: req.user._id });
   if (!purchase) return next(new AppError('لم يتم العثور على فاتورة الشراء', 404));
 
-  // Reverse stock
-  for (const item of purchase.items) {
-    await Drug.findOneAndUpdate(
-      { _id: item.drug, warehouse: req.user._id },
-      { $inc: { quantity: -item.quantity } }
-    );
-  }
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      // Reverse stock
+      for (const item of purchase.items) {
+        let qtyToRemoveUnits = item.quantity;
+        let packingSize = 1;
 
-  await Purchase.findByIdAndDelete(purchase._id);
+        // If it was purchased by carton, reverse using packingSize conversion
+        if (item.unitType === 'carton') {
+          const drug = await Drug.findById(item.drug).select('packingSize').session(session);
+          if (drug && drug.packingSize > 1) {
+            packingSize = drug.packingSize;
+            qtyToRemoveUnits = item.quantity * packingSize;
+          }
+        }
+
+        const before = await Drug.findOne({ _id: item.drug, warehouse: req.user._id }).select('quantity').session(session);
+        const updated = await Drug.findOneAndUpdate(
+          { _id: item.drug, warehouse: req.user._id },
+          { $inc: { quantity: -qtyToRemoveUnits } },
+          { session, new: true }
+        );
+
+        if (before && updated) {
+          await StockMovement.create([{
+            warehouse: req.user._id,
+            drug: item.drug,
+            type: 'purchase_cancel',
+            direction: 'out',
+            quantity: item.quantity,
+            unitType: item.unitType === 'carton' ? 'carton' : 'unit',
+            packingSize,
+            quantityUnits: qtyToRemoveUnits,
+            beforeQty: before.quantity,
+            afterQty: updated.quantity,
+            referenceModel: 'Purchase',
+            referenceId: purchase._id,
+            actor: req.user._id,
+            notes: 'Purchase deleted (stock reversal)'
+          }], { session });
+        }
+      }
+
+      await Purchase.findByIdAndDelete(purchase._id).session(session);
+    });
+  } finally {
+    session.endSession();
+  }
   res.status(204).json({ status: 'success', data: null });
 });
 

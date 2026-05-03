@@ -52,7 +52,7 @@ router.patch('/updateMe', auth.protect, upload.fields([{ name: 'licenseImage', m
   });
 
   // Notify Admin if license image was uploaded
-  if (req.file) {
+  if (req.files && req.files.licenseImage && req.files.licenseImage.length) {
     notifyAdmin('طلب انضمام جديد', `قام صيدلاني جديد (${user.name}) برفع ترخيص الصيدلية وينتظر التفعيل.`);
   }
 }));
